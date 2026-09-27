@@ -48,6 +48,26 @@ DeepSeek Flash model. JPEG, PNG, GIF, and WebP inputs are accepted by the
 homework runner.
 
 
-## Homework 1 solution: 
+## Homework 1 solution
+
+```mermaid
+flowchart TD
+    A[Receipt Images] --> B[DeepSeek V4 Flash Vision]
+    B --> C[Structured Receipt Extraction]
+    C --> D[Final Payment]
+    C --> E[Subtotal]
+    C --> F[Discounts]
+    C --> G[Rounding]
+    D --> H[Python Decimal Aggregation]
+    E --> H
+    F --> H
+    H --> I[Question 1: Total Amount Paid]
+    H --> J[Question 2: Total Without Discounts]
+    I --> K[Strict HKD Output]
+    J --> K
+```
+
+The solution processes each receipt independently using the required `deepseek-v4-flash-vision-exp` model through LangChain. The vision model extracts structured fields for the final payment, subtotal, discounts, and rounding. The model is used only for visual and semantic extraction, while all financial aggregation is performed deterministically in Python using `Decimal`. For the first query, the program sums the final payments after rounding. For the second query, it adds all extracted discount amounts back to each subtotal while deliberately excluding rounding. The final responses are formatted as a single HKD amount so that they satisfy the automated grader's output requirements.
+
 > to students: please fill your solution description here.
 

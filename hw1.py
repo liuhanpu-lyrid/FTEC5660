@@ -63,7 +63,117 @@ def build_chain() -> Any:
     ``deepseek-v4-flash-vision-exp``. The API key is loaded from .env.
     """
     ### YOUR CODE HERE
-    return None
+    from pydantic import BaseModel, Field
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_deepseek import ChatDeepSeek
+
+    class ReceiptExtraction(BaseModel):
+        final_payment: str = Field(
+            description=(
+                "The final amount actually paid by the customer AFTER discounts "
+                "and AFTER rounding. Return only the HKD monetary amount, "
+                "without a currency symbol."
+            )
+        )
+        subtotal: str = Field(
+            description=(
+                "The receipt SUBTOTAL after discounts but BEFORE rounding. "
+                "Return only the HKD monetary amount, without a currency symbol."
+            )
+        )
+        discounts: list[str] = Field(
+            description=(
+                "All actual discount, promotion, coupon, member, app, "
+                "packaging-damage, or percentage-discount monetary amounts. "
+                "Return each monetary discount as a positive HKD amount. "
+                "Do not include percentages and do not include rounding."
+            )
+        )
+        rounding: str | None = Field(
+            description=(
+                "The ROUNDING adjustment shown on the receipt, including its sign. "
+                "Return null if no rounding line exists."
+            )
+        )
+
+    llm = ChatDeepSeek(
+        model="deepseek-v4-flash-vision-exp",
+        temperature=0,
+        max_tokens=800,
+        timeout=60,
+        max_retries=2,
+        reasoning_effort="none",
+    )
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """
+You are a precise information-extraction system for Hong Kong supermarket receipts.
+
+Your job is to READ the receipt, not to calculate totals across multiple receipts.
+
+Carefully distinguish these concepts:
+
+1. final_payment
+   - The amount the customer ultimately paid AFTER discounts and AFTER ROUNDING.
+   - It may appear next to a payment method such as OCTOPUS, VISA, Mastercard,
+     card payment, cash payment, NET TOTAL, AMOUNT DUE, or similar.
+   - Do NOT confuse it with SUBTOTAL, cash tendered, amount received, change,
+     card balance, loyalty points, receipt number, date, time, or item quantity.
+
+2. subtotal
+   - The subtotal AFTER discounts have already been applied but BEFORE ROUNDING.
+   - Prefer an amount explicitly labelled SUBTOTAL or an equivalent subtotal line.
+
+3. discounts
+   - Extract every actual monetary discount / promotion / coupon amount.
+   - Include member discounts, app discounts, promotional reductions,
+     packaging-damage discounts and percentage discounts.
+   - Always return the MONETARY discount amount as a positive value.
+   - Example: if the receipt says "5% OFF   -5.39", return "5.39".
+   - Never return "5" from the 5% percentage.
+   - ROUNDING is NOT a discount.
+   - If there are no discounts, return an empty list.
+
+4. rounding
+   - Extract the receipt's ROUNDING adjustment separately.
+   - Preserve whether it is positive or negative.
+   - ROUNDING must never be included in discounts.
+
+Copy monetary values accurately from the receipt.
+Do not invent values that are not supported by the receipt.
+""".strip(),
+            ),
+            (
+                "human",
+                [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Extract the required financial information from this "
+                            "single supermarket receipt."
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "{image_url}",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            ),
+        ]
+    )
+
+    structured_llm = llm.with_structured_output(
+        ReceiptExtraction,
+        method="function_calling",
+    )
+
+    return prompt | structured_llm
 
 
 def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
@@ -79,8 +189,55 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
     to process independent receipt-extraction prompts in parallel.
     """
     ### YOUR CODE HERE
-    _ = (chain, images)
-    return {QUERY_1: DUMMY_RESPONSE, QUERY_2: DUMMY_RESPONSE}
+    def to_decimal(value: Any) -> Decimal:
+        text = str(value).strip()
+        text = (
+            text.replace("HK$", "")
+            .replace("$", "")
+            .replace(",", "")
+            .strip()
+        )
+
+        try:
+            return Decimal(text)
+        except InvalidOperation as exc:
+            raise ValueError(
+                f"Invalid monetary value returned by model: {value!r}"
+            ) from exc
+
+    total_paid = Decimal("0.00")
+    total_without_discount = Decimal("0.00")
+
+    for image in images:
+        receipt = chain.invoke(
+            {
+                "image_url": image_data_url(image)
+            }
+        )
+
+        final_payment = to_decimal(receipt.final_payment)
+        subtotal = to_decimal(receipt.subtotal)
+
+        discount_total = sum(
+            (
+                abs(to_decimal(discount))
+                for discount in receipt.discounts
+            ),
+            Decimal("0.00"),
+        )
+
+        total_paid += final_payment
+        total_without_discount += subtotal + discount_total
+
+    total_paid = total_paid.quantize(Decimal("0.01"))
+    total_without_discount = total_without_discount.quantize(
+        Decimal("0.01")
+    )
+
+    return {
+        QUERY_1: f"HK${total_paid:.2f}",
+        QUERY_2: f"HK${total_without_discount:.2f}",
+    }
 
 
 # Everything below is provided runner/scoring code. No edits are needed.
